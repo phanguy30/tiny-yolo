@@ -8,6 +8,25 @@ Starting from a straightforward reference engine that needed **~230 MB** of RAM 
 per image, this engine runs the same model in **~13 MB** at **~40 ms per image** (4 threads),
 with detections matching the reference.
 
+![Detections on the sample orchard photos](docs/demo_detections.jpg)
+*The bundled cherry ripeness model on the sample photos: red = mature, green = immature.*
+
+## Quick start
+
+The repository includes a sample model (a 2-class cherry ripeness detector) and eight orchard
+photos, so you can try it right away:
+
+```sh
+make
+python3 tools/jpg_to_ppm.py samples/images samples/ppm      # needs Pillow
+./tiny_yolo samples/model/model.param samples/model/model.bin samples/ppm/*.ppm --threads 4
+```
+
+For a guided walkthrough (build, detect, draw boxes, count ripe cherries, compare memory and
+speed across precision modes, and inspect the memory plan), open
+[`notebooks/cherry_demo.ipynb`](notebooks/cherry_demo.ipynb). It needs Jupyter and Pillow.
+The model is described in [`samples/README.md`](samples/README.md).
+
 ## Results
 
 18 test images (1328×1328), YOLOv8n-sized 2-class model, measured with `tools/evaluate.py` on
@@ -191,6 +210,9 @@ re-check accuracy on your own data whenever you change them.
 | `src/dtype.hpp`, `src/tensor.hpp` | storage types, fp16 conversion, tensor views |
 | `src/thread_pool.*` | persistent worker pool |
 | `tools/evaluate.py` | peak RSS, per-image time and detection comparison against a reference engine |
+| `tools/jpg_to_ppm.py` | converts JPG/PNG images to PPM (Pillow) |
+| `samples/` | sample cherry ripeness model (`model/`) and orchard photos (`images/`) |
+| `notebooks/cherry_demo.ipynb` | end-to-end walkthrough on the samples |
 
 ## Evaluating
 
@@ -199,7 +221,14 @@ python3 tools/evaluate.py --engine ./tiny_yolo --model path/to/weights --images 
     [--reference path/to/reference_engine] [--threads 4] [--flags "--weights int8"]
 ```
 
-The model weights and test images are not included in this repository.
+For example, on the bundled samples:
+
+```sh
+python3 tools/evaluate.py --engine ./tiny_yolo --model samples/model --images samples/ppm
+```
+
+The Results table above was measured on a larger set of 18 photos against the original reference
+engine. That engine isn't part of this repository.
 
 ## Supported operators and limits
 
