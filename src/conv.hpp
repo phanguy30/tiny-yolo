@@ -46,6 +46,8 @@ public:
     void finalize();
     // decode block range to fp32 packed layout (dst sized padded_count()).
     void decode_blocks(float* dst, int b0, int b1) const;
+    // block b, reduction indices [k0, k1), all MR lanes, as fp32 in [k][MR] order
+    void decode_range(float* dst, int b, int k0, int k1) const;
     const float* f32() const { return f32_.data(); }
     std::size_t bytes() const;
 
@@ -69,6 +71,7 @@ public:
     Activation act = Activation::None;
     float act_alpha = 0.f;
     bool has_residual = false;  // fused "+ input[1]" after activation
+    bool winograd = false;      // 3x3 stride-1 pad-1: Winograd F(2x2,3x3) instead of im2col
     PackedWeights weights;
     std::vector<float> bias;
 
@@ -84,6 +87,7 @@ public:
     int out_h(int in_h) const { return (in_h + pt + pb - dh * (kh - 1) - 1) / sh + 1; }
     int out_w(int in_w) const { return (in_w + pl + pr - dw * (kw - 1) - 1) / sw + 1; }
     std::size_t decoded_weight_bytes() const;
+    std::size_t winograd_weight_count() const;
     std::size_t thread_workspace_bytes() const;
     // returns fp32 packed weights (decoding/reading into `scratch` if not resident fp32)
     const float* prepare_weights(float* scratch, ExecContext& ctx) const;
@@ -98,6 +102,10 @@ public:
 
 private:
     int tile_pixels() const;
+    void run_rows_winograd(const float* u, const Plane& in, const Plane& out, const Plane* res, int oy0, int oy1,
+                           unsigned char* thread_ws, std::size_t stride, ThreadPool& pool) const;
+    void winograd_chunk(const float* u, const Plane& in, const Plane& out, const Plane* res, int oy, int rows,
+                        int tx0, unsigned char* ws) const;
     void run_tile(const float* w32, const Plane& in, const Plane& out, const Plane* res, int out_w, int pa, int pbnd,
                   unsigned char* ws) const;
     template <class Tag>

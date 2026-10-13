@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 
 // ---------------------------------------------------------------- ModelBin
@@ -48,6 +49,20 @@ void parallel_range(ThreadPool& pool, std::size_t n, std::size_t min_chunk, F&& 
     pool.parallel_for(static_cast<int>(tasks), [&](int t, int) {
         fn(n * static_cast<std::size_t>(t) / tasks, n * static_cast<std::size_t>(t + 1) / tasks);
     });
+}
+
+// n consecutive stored values <-> floats (vectorized fp16 conversion)
+template <class Tag>
+inline void load_n(const typename Tag::T* p, float* d, std::size_t n) {
+    if constexpr (std::is_same<Tag, F16Tag>::value) fm::half_to_float_n(p, d, static_cast<int>(n));
+    else if constexpr (std::is_same<Tag, F32Tag>::value) std::memcpy(d, p, n * sizeof(float));
+    else for (std::size_t i = 0; i < n; ++i) d[i] = Tag::ld(p, i);
+}
+template <class Tag>
+inline void store_n(const float* s, typename Tag::T* p, std::size_t n) {
+    if constexpr (std::is_same<Tag, F16Tag>::value) fm::float_to_half_n(s, p, static_cast<int>(n));
+    else if constexpr (std::is_same<Tag, F32Tag>::value) std::memcpy(p, s, n * sizeof(float));
+    else for (std::size_t i = 0; i < n; ++i) Tag::st(p, i, s[i]);
 }
 
 void outer_inner(const Shape& s, int axis, std::size_t& outer, std::size_t& inner) {
@@ -143,6 +158,33 @@ public:
             const int oh = out[0].shape.h(), ow = out[0].shape.w();
             int padr, padb;
             pads(s, padr, padb);
+            constexpr int kMaxW = 4096;
+            if (type == 0 && w <= kMaxW && ow <= kMaxW) {
+                // max is separable: per output row, max over the kh input rows, then over kw columns
+                ctx.pool->parallel_for(c, [&](int ch, int) {
+                    const auto* x = xin + static_cast<std::size_t>(ch) * h * w;
+                    auto* y = yout + static_cast<std::size_t>(ch) * oh * ow;
+                    alignas(32) float row[kMaxW], col[kMaxW], res[kMaxW];
+                    for (int oy = 0; oy < oh; ++oy) {
+                        const int y0 = oy * sh - pt;
+                        const int ya = std::max(y0, 0), yb = std::min(y0 + kh, h);
+                        for (int ix = 0; ix < w; ++ix) col[ix] = -std::numeric_limits<float>::infinity();
+                        for (int iy = ya; iy < yb; ++iy) {
+                            load_n<TI>(x + static_cast<std::size_t>(iy) * w, row, static_cast<std::size_t>(w));
+                            for (int ix = 0; ix < w; ++ix) col[ix] = std::max(col[ix], row[ix]);
+                        }
+                        for (int ox = 0; ox < ow; ++ox) {
+                            const int x0 = ox * sw - pl;
+                            const int xa = std::max(x0, 0), xb = std::min(x0 + kw, w);
+                            float r = -std::numeric_limits<float>::infinity();
+                            for (int ix = xa; ix < xb; ++ix) r = std::max(r, col[ix]);
+                            res[ox] = r;
+                        }
+                        store_n<TO>(res, y + static_cast<std::size_t>(oy) * ow, static_cast<std::size_t>(ow));
+                    }
+                });
+                return;
+            }
             ctx.pool->parallel_for(c, [&](int ch, int) {
                 const auto* x = xin + static_cast<std::size_t>(ch) * h * w;
                 auto* y = yout + static_cast<std::size_t>(ch) * oh * ow;
@@ -195,12 +237,33 @@ public:
         const int oh = out[0].shape.h(), ow = out[0].shape.w();
         const float fy = out_h ? static_cast<float>(h) / static_cast<float>(oh) : 1.f / hs;
         const float fx = out_w ? static_cast<float>(w) / static_cast<float>(ow) : 1.f / ws;
+        constexpr int kMaxW = 4096;
         dispatch_float2(in[0].dtype, out[0].dtype, [&](auto ti, auto to) {
             using TI = decltype(ti);
             using TO = decltype(to);
             ctx.pool->parallel_for(c, [&](int ch, int) {
                 const auto* x = static_cast<const typename TI::T*>(in[0].data) + static_cast<std::size_t>(ch) * h * w;
                 auto* y = static_cast<typename TO::T*>(out[0].data) + static_cast<std::size_t>(ch) * oh * ow;
+                if (ow <= kMaxW) {
+                    int sxs[kMaxW];
+                    for (int ox = 0; ox < ow; ++ox) sxs[ox] = std::min(static_cast<int>(static_cast<float>(ox) * fx), w - 1);
+                    int prev = -1;
+                    for (int oy = 0; oy < oh; ++oy) {
+                        const int sy = std::min(static_cast<int>(static_cast<float>(oy) * fy), h - 1);
+                        auto* yr = y + static_cast<std::size_t>(oy) * ow;
+                        if (sy == prev) {  // same source row as the previous output row
+                            std::memcpy(yr, yr - ow, static_cast<std::size_t>(ow) * sizeof(*yr));
+                            continue;
+                        }
+                        const auto* xr = x + static_cast<std::size_t>(sy) * w;
+                        if constexpr (std::is_same<TI, TO>::value)  // nearest: copy the stored values as they are
+                            for (int ox = 0; ox < ow; ++ox) yr[ox] = xr[sxs[ox]];
+                        else
+                            for (int ox = 0; ox < ow; ++ox) TO::st(yr, static_cast<std::size_t>(ox), TI::ld(xr, static_cast<std::size_t>(sxs[ox])));
+                        prev = sy;
+                    }
+                    return;
+                }
                 for (int oy = 0; oy < oh; ++oy) {
                     const int sy = std::min(static_cast<int>(static_cast<float>(oy) * fy), h - 1);
                     for (int ox = 0; ox < ow; ++ox) {
@@ -421,6 +484,33 @@ public:
         dispatch_float2(in[0].dtype, out[0].dtype, [&](auto ti, auto to) {
             using TI = decltype(ti);
             using TO = decltype(to);
+            constexpr std::size_t B = 32;  // positions per block (along the contiguous inner axis)
+            if (inner >= B && n * B <= 4096) {
+                // blocks of B consecutive positions: every pass is a contiguous, vectorizable loop
+                const std::size_t blocks_per_outer = (inner + B - 1) / B;
+                parallel_range(*ctx.pool, outer * blocks_per_outer, 64, [&](std::size_t b, std::size_t e) {
+                    alignas(32) float t[4096];
+                    alignas(32) float m[B], sum[B];
+                    for (std::size_t blk = b; blk < e; ++blk) {
+                        const std::size_t o = blk / blocks_per_outer, k0 = blk % blocks_per_outer * B;
+                        const std::size_t nb = std::min(B, inner - k0);
+                        const auto* x = static_cast<const typename TI::T*>(in[0].data) + o * n * inner + k0;
+                        auto* y = static_cast<typename TO::T*>(out[0].data) + o * n * inner + k0;
+                        for (std::size_t i = 0; i < n; ++i) load_n<TI>(x + i * inner, t + i * B, nb);
+                        for (std::size_t j = 0; j < B; ++j) { m[j] = t[j]; sum[j] = 0.f; }
+                        for (std::size_t i = 1; i < n; ++i)
+                            for (std::size_t j = 0; j < B; ++j) m[j] = std::max(m[j], t[i * B + j]);
+                        for (std::size_t i = 0; i < n; ++i)
+                            for (std::size_t j = 0; j < B; ++j) { t[i * B + j] = fm::exp(t[i * B + j] - m[j]); sum[j] += t[i * B + j]; }
+                        for (std::size_t j = 0; j < B; ++j) sum[j] = 1.f / sum[j];
+                        for (std::size_t i = 0; i < n; ++i) {
+                            for (std::size_t j = 0; j < B; ++j) t[i * B + j] *= sum[j];
+                            store_n<TO>(t + i * B, y + i * inner, nb);
+                        }
+                    }
+                });
+                return;
+            }
             parallel_range(*ctx.pool, outer * inner, 2048, [&](std::size_t b, std::size_t e) {
                 for (std::size_t idx = b; idx < e; ++idx) {
                     const std::size_t o = idx / inner, k = idx % inner;

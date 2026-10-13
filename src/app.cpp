@@ -93,7 +93,8 @@ static void usage() {
                  "  --verbose            print the optimized execution plan\n"
                  "  --activations fp16|fp32    activation storage (default fp16; compute is fp32)\n"
                  "  --input fp16|u8|fp32 network input storage (default fp16)\n"
-                 "  --no-fuse --no-views --no-concat-inplace --no-inplace --no-stream   disable optimizations\n";
+                 "  --no-fuse --no-views --no-concat-inplace --no-inplace --no-stream --no-winograd\n"
+                 "                       disable optimizations\n";
 }
 
 int main(int argc, char** argv) {
@@ -137,6 +138,7 @@ int main(int argc, char** argv) {
             else if (a == "--no-concat-inplace") opt.concat_in_place = false;
             else if (a == "--no-inplace") opt.inplace_elementwise = false;
             else if (a == "--no-stream") opt.stream_conv_chains = false;
+            else if (a == "--no-winograd") opt.config.winograd = false;
             else if (a == "--input") {
                 std::string f = next();
                 if (f == "fp32") opt.input_dtype = DType::F32;

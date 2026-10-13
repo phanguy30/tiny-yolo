@@ -53,6 +53,7 @@ struct EngineConfig {
     // medium ones use fp16.
     std::size_t fp32_below = 16384;  // fp16/int8 modes: layers smaller than this stay fp32
     std::size_t int8_min = 32768;    // int8 mode: layers at least this large are int8
+    bool winograd = true;            // Winograd F(2x2,3x3) for 3x3 stride-1 convolutions
 };
 
 // Resident format of one convolution layer's weights under the configured policy.

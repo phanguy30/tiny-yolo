@@ -7,7 +7,7 @@
 #   make CXX=aarch64-linux-gnu-g++ ARCH=-mcpu=cortex-a53   cross-compile example
 CXX ?= c++
 ARCH ?= -march=native
-CXXFLAGS ?= -O3 -std=c++17 $(ARCH) -ffp-contract=fast -fno-math-errno -Wall -Wextra -Wpedantic
+CXXFLAGS ?= -O3 -std=c++17 $(ARCH) -ffp-contract=fast -fno-math-errno -fno-trapping-math -Wall -Wextra -Wpedantic
 LDFLAGS ?= -pthread
 
 SOURCES = src/app.cpp src/graph.cpp src/layers.cpp src/conv.cpp src/conv_chain.cpp \

@@ -29,7 +29,7 @@ void ConvChainLayer::configure(const Shape& input_shape, int threads) {
     for (std::size_t s = 0; s + 1 < n; ++s) {
         const ConvolutionLayer& next = *stages[s + 1];
         const std::size_t row_bytes = static_cast<std::size_t>(shapes_[s + 1].c()) * shapes_[s + 1].w() * sizeof(float);
-        const int max_rows = static_cast<int>(ring_budget_bytes / std::max<std::size_t>(row_bytes, 1));
+        const int max_rows = static_cast<int>(ring_budget / std::max<std::size_t>(row_bytes, 1));
         const int max_band = (max_rows - (next.kh - 1) * next.dh - 1) / next.sh + 1;
         band_[s + 1] = std::max(1, std::min(band_[s + 1], max_band));
     }

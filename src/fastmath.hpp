@@ -1,7 +1,17 @@
 #pragma once
-// Branch-free, auto-vectorizable math helpers (no intrinsics -> portable to ARM/x86).
+// Branch-free, auto-vectorizable math helpers (portable to ARM/x86). The block fp16
+// converters at the end use the hardware conversion instructions where the compiler
+// exposes them (AArch64 NEON, x86 F16C) and the portable code otherwise.
 #include <cstdint>
 #include <cstring>
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#define FM_F16_NEON 1
+#elif defined(__F16C__)
+#include <immintrin.h>
+#define FM_F16_F16C 1
+#endif
 
 namespace fm {
 
@@ -31,6 +41,16 @@ inline float exp(float x) {
 
 inline float sigmoid(float x) { return 1.f / (1.f + fm::exp(-x)); }
 inline float swish(float x) { return x / (1.f + fm::exp(-x)); }
+
+// In-place over n values. Kept as separate loops so that compilers vectorize them
+// whatever the calling context (GCC otherwise leaves some inlined copies scalar).
+#if defined(__GNUC__)
+#define FM_NOINLINE __attribute__((noinline))
+#else
+#define FM_NOINLINE
+#endif
+FM_NOINLINE inline void swish_n(float* __restrict v, int n) { for (int i = 0; i < n; ++i) v[i] = swish(v[i]); }
+FM_NOINLINE inline void sigmoid_n(float* __restrict v, int n) { for (int i = 0; i < n; ++i) v[i] = sigmoid(v[i]); }
 
 // IEEE half <-> float (round-to-nearest-even), no hardware support required.
 inline std::uint16_t float_to_half(float f) {
@@ -86,6 +106,37 @@ inline float half_to_float(std::uint16_t h) {
     std::uint32_t r = em >= 0x7c00u ? infnan : normal;
     r = em < 0x0400u ? subbits : r;
     return bits_to_float(r | sign);
+}
+
+// n halves -> floats / floats -> halves (round to nearest even), same results as the
+// scalar functions above.
+inline void half_to_float_n(const std::uint16_t* s, float* d, int n) {
+    int i = 0;
+#if defined(FM_F16_NEON)
+    for (; i + 8 <= n; i += 8) {
+        const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(s + i));
+        vst1q_f32(d + i, vcvt_f32_f16(vget_low_f16(h)));
+        vst1q_f32(d + i + 4, vcvt_high_f32_f16(h));
+    }
+#elif defined(FM_F16_F16C)
+    for (; i + 8 <= n; i += 8)
+        _mm256_storeu_ps(d + i, _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s + i))));
+#endif
+    for (; i < n; ++i) d[i] = half_to_float(s[i]);
+}
+
+inline void float_to_half_n(const float* s, std::uint16_t* d, int n) {
+    int i = 0;
+#if defined(FM_F16_NEON)
+    for (; i + 8 <= n; i += 8) {
+        const float16x8_t h = vcvt_high_f16_f32(vcvt_f16_f32(vld1q_f32(s + i)), vld1q_f32(s + i + 4));
+        vst1q_u16(d + i, vreinterpretq_u16_f16(h));
+    }
+#elif defined(FM_F16_F16C)
+    for (; i + 8 <= n; i += 8)
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(d + i), _mm256_cvtps_ph(_mm256_loadu_ps(s + i), _MM_FROUND_TO_NEAREST_INT));
+#endif
+    for (; i < n; ++i) d[i] = float_to_half_fast(s[i]);
 }
 
 }  // namespace fm

@@ -12,10 +12,12 @@ class ConvChainLayer : public Layer {
 public:
     std::vector<std::shared_ptr<ConvolutionLayer>> stages;
     static int band_target_pixels;          // pixels per band (parallelism vs ring size)
-    static std::size_t ring_budget_bytes;   // cap for each intermediate ring buffer
+    static std::size_t ring_budget_bytes;   // default cap for each intermediate ring buffer
+    std::size_t ring_budget = ring_budget_bytes;  // this chain's cap (raised by the planner where it is free)
 
     // Shapes of each stage's input (index s) and output (index s+1).
     void configure(const Shape& input_shape, int threads);
+    void configure() { const Shape s = shapes_.at(0); configure(s, 0); }  // again, e.g. after changing ring_budget
 
     std::vector<Shape> infer_shapes(const std::vector<Shape>& in) const override;
     std::size_t workspace_bytes(const std::vector<Shape>& in, const std::vector<Shape>& out, int threads) const override;

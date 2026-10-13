@@ -1,0 +1,8 @@
+bench/.venv
+.git
+samples/ppm
+tiny_yolo
+bench/ncnn_runner*
+!bench/ncnn_runner.cpp
+bench/results_*
+bench/RESULTS_*

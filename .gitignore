@@ -9,3 +9,9 @@ samples/ppm/
 .DS_Store
 __pycache__/
 .ipynb_checkpoints/
+
+# benchmark (bench/README.md)
+bench/.venv/
+bench/models/
+bench/ncnn_runner
+bench/ncnn_runner_lean

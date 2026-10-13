@@ -61,6 +61,7 @@ Letterbox letterbox_ppm_into(const std::string& path, const TensorView& input) {
         dxs[static_cast<std::size_t>(x)] = sx - x0;
     }
 
+    std::vector<float> vals(static_cast<std::size_t>(width));  // one interpolated output row
     const std::size_t row_bytes = static_cast<std::size_t>(iw) * 3;
     std::vector<unsigned char> rows[2] = {std::vector<unsigned char>(row_bytes), std::vector<unsigned char>(row_bytes)};
     int row_id[2] = {-1, -1};
@@ -96,10 +97,15 @@ Letterbox letterbox_ppm_into(const std::string& path, const TensorView& input) {
                 const float dx = dxs[static_cast<std::size_t>(x)];
                 const float a = float(r0[x0]) * (1 - dx) + float(r0[x1]) * dx;
                 const float b = float(r1[x0]) * (1 - dx) + float(r1[x1]) * dx;
-                const float v = a * (1 - dy) + b * dy;
-                if (u8) input.u8()[off + x] = static_cast<unsigned char>(std::min(255.f, std::nearbyint(v)));  // like cv2.resize on uint8
-                else if (input.dtype == DType::F16) input.f16()[off + x] = fm::float_to_half(v / 255.f);
-                else input.f32()[off + x] = v / 255.f;
+                vals[static_cast<std::size_t>(x)] = a * (1 - dy) + b * dy;
+            }
+            if (u8) {
+                for (int x = 0; x < width; ++x)  // like cv2.resize on uint8
+                    input.u8()[off + x] = static_cast<unsigned char>(std::min(255.f, std::nearbyint(vals[static_cast<std::size_t>(x)])));
+            } else {
+                for (int x = 0; x < width; ++x) vals[static_cast<std::size_t>(x)] /= 255.f;
+                if (input.dtype == DType::F16) fm::float_to_half_n(vals.data(), input.f16() + off, width);
+                else std::copy(vals.begin(), vals.begin() + width, input.f32() + off);
             }
         }
     }

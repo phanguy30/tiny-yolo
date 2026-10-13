@@ -85,6 +85,8 @@ private:
     void pass_concat_in_place();
     void pass_inplace();
     void pass_conv_chains();
+    void pass_winograd();
+    void pass_chain_rings();
     void pass_dtypes();
     void bind();
     TensorView view_of(int v) const;

@@ -365,6 +365,49 @@ void Engine::pass_dtypes() {
     values_[static_cast<std::size_t>(in)].scale = want == DType::U8 ? opt_.input_u8_scale : 1.f;
 }
 
+// Winograd convolutions need more scratch (16 transformed weights per 3x3 filter, and
+// transformed input tiles per thread), so they must not raise the planned peak: starting
+// from the plan without Winograd, layers are switched to it one at a time (smallest
+// scratch first, i.e. the high-resolution layers that do most of the work) and each is
+// kept only if the arena does not grow.
+void Engine::pass_winograd() {
+    std::vector<std::shared_ptr<ConvolutionLayer>> convs;
+    for (const Op& op : ops_)
+        if (!op.removed)
+            for (auto& c : conv_stages(op.layer))
+                if (c->winograd) { c->winograd = false; convs.push_back(c); }
+    if (convs.empty()) return;
+    auto scratch = [](const ConvolutionLayer& c) {
+        return c.winograd_weight_count() * sizeof(float) + 16 * static_cast<std::size_t>(c.in_channels) * ConvolutionLayer::NR * sizeof(float);
+    };
+    std::stable_sort(convs.begin(), convs.end(), [&](const auto& x, const auto& y) { return scratch(*x) < scratch(*y); });
+    const std::size_t limit = make_plan().arena;
+    for (auto& c : convs) {
+        c->winograd = true;
+        if (make_plan().arena > limit) c->winograd = false;
+    }
+}
+
+// Small rings mean short bands, and short bands mean few work items per band for the
+// thread pool. Each chain's ring budget is doubled while the planned arena stays the same.
+void Engine::pass_chain_rings() {
+    const std::size_t limit = make_plan().arena;
+    for (const Op& op : ops_) {
+        auto ch = op.removed ? nullptr : std::dynamic_pointer_cast<ConvChainLayer>(op.layer);
+        if (!ch) continue;
+        for (int step = 0; step < 4; ++step) {
+            const std::size_t prev = ch->ring_budget;
+            ch->ring_budget = prev * 2;
+            ch->configure();
+            if (make_plan().arena > limit) {
+                ch->ring_budget = prev;
+                ch->configure();
+                break;
+            }
+        }
+    }
+}
+
 void Engine::pass_conv_chains() {
     Plan p0 = make_plan();
     std::pair<std::size_t, std::size_t> best{p0.arena, p0.area};
@@ -439,6 +482,8 @@ void Engine::prepare(const Shape& input_shape) {
     if (opt_.concat_in_place) pass_concat_in_place();
     if (opt_.inplace_elementwise) pass_inplace();
     if (opt_.stream_conv_chains) pass_conv_chains();
+    pass_winograd();
+    if (opt_.stream_conv_chains) pass_chain_rings();
 
     plan_ = make_plan();
     report_.arena_bytes = plan_.arena;
